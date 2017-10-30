@@ -1,0 +1,767 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(ggplot2)
+  library(GGally)
+  library(monocle)
+  library(igraph)
+  library(EnsDb.Mmusculus.v79)
+  library(gridExtra)
+  library(slingshot)
+  library(cowplot)
+})
+```
+
+Source the functions
+```{r}
+source("final_analysis_functions.R")
+```
+
+Read in the UMI matrices, perform QC, and normalize
+```{r}
+#sample_files <- dir("/research/projects/gawadgrp/NEURO_10X/common/DATA/", full.names = TRUE)
+#sample_files[c(3,4, 28, 5,6,7,8,9,11,12,13,14,15,16,17,38,18,19,20,21,24,25,26,27,22,23)]
+sample_files <- c('/research/projects/gawadgrp/NEURO_10X/common/DATA//E10C_withtopoff', '/research/projects/gawadgrp/NEURO_10X/common/DATA//E10D_withtopoff', '/research/projects/gawadgrp/NEURO_10X/common/DATA//PAN_CB_E11A', '/research/projects/gawadgrp/NEURO_10X/common/DATA//E11B_withtopoff', '/research/projects/gawadgrp/NEURO_10X/common/DATA//E12C_withtopoff', '/research/projects/gawadgrp/NEURO_10X/common/DATA//E12D_withtopoff', '/research/projects/gawadgrp/NEURO_10X/common/DATA//E13A_topoff', '/research/projects/gawadgrp/NEURO_10X/common/DATA//E13B_topoff', '/research/projects/gawadgrp/NEURO_10X/common/DATA//E14C_withtopoff', '/research/projects/gawadgrp/NEURO_10X/common/DATA//E14E', '/research/projects/gawadgrp/NEURO_10X/common/DATA//E15A_topoff', '/research/projects/gawadgrp/NEURO_10X/common/DATA//E15C_withtopoff', '/research/projects/gawadgrp/NEURO_10X/common/DATA//E16C_withtopoff', '/research/projects/gawadgrp/NEURO_10X/common/DATA//E16D_withtopoff', '/research/projects/gawadgrp/NEURO_10X/common/DATA//E17A_topoff', '/research/projects/gawadgrp/NEURO_10X/common/DATA//PAN_CB_E17_B', '/research/projects/gawadgrp/NEURO_10X/common/DATA//E18B_topoff', '/research/projects/gawadgrp/NEURO_10X/common/DATA//E18C_withtopoff', '/research/projects/gawadgrp/NEURO_10X/common/DATA//P0A_topoff', '/research/projects/gawadgrp/NEURO_10X/common/DATA//P0B_topoff', '/research/projects/gawadgrp/NEURO_10X/common/DATA//P4A_topoff', '/research/projects/gawadgrp/NEURO_10X/common/DATA//P4B_topoff', '/research/projects/gawadgrp/NEURO_10X/common/DATA//P7A_topoff', '/research/projects/gawadgrp/NEURO_10X/common/DATA//P7B_topoff', '/research/projects/gawadgrp/NEURO_10X/common/DATA//P10A_withtopoff', '/research/projects/gawadgrp/NEURO_10X/common/DATA//P10B_withtopoff')
+
+cell_count <- 0
+
+giant_mat <- t(do.call(cbind, lapply(sample_files, function(.filename)  {
+ sample_name <- sub("PAN_", "", sub('_[^_]+', '', basename(.filename)))
+ sample_obj <- cellrangerRkit::load_cellranger_matrix(.filename, genome = 'mm10')
+ sample_mat <- exprs(sample_obj)
+ colnames(sample_mat) <- paste(sample_name, colnames(sample_mat), sep = "_")
+ cell_count <<- cell_count + ncol(sample_mat)
+ return(sample_mat)
+})))
+
+#Remove ribosomal and mt proteins
+giant_norpmt_mat <- remove_ribosomal_proteins_and_mitochondrial_genes_from_matrix(cell_by_ensembl_mat = giant_mat, species = 'mmusculus')
+
+#Remove cells with less than 3500 UMIs
+umi_counts <- rowSums(giant_norpmt_mat)
+giant_norpmt_gteq3500umi_lteq15000umi_mat <- giant_norpmt_mat[(umi_counts <= 15000) & (umi_counts >= 3500),]
+rm(umi_counts)
+
+#remove the 14B cells, since these are only 330 cells with at least 3500 UMIs and this would make a single sample date with triplicate data
+giant_norpmt_gteq3500umi_lteq15000umi_noe14b_mat <- giant_norpmt_gteq3500umi_lteq15000umi_mat[grep("^E14B", rownames(giant_norpmt_gteq3500umi_lteq15000umi_mat), invert = TRUE),]
+
+#Fix the E17 labels of giant_norpmt_gteq3500umi_lteq15000umi_noe14b_mat
+rownames(giant_norpmt_gteq3500umi_lteq15000umi_noe14b_mat) <- sub("E17_B", "E17B", rownames(giant_norpmt_gteq3500umi_lteq15000umi_noe14b_mat))
+rownames(giant_norpmt_gteq3500umi_lteq15000umi_noe14b_mat) <- sub("E17_", "E17", rownames(giant_norpmt_gteq3500umi_lteq15000umi_noe14b_mat))
+
+#Remove non-expressed genes
+giant_norpmt_gteq3500umi_lteq15000umi_noe14b_expressed_only_mat <- giant_norpmt_gteq3500umi_lteq15000umi_noe14b_mat[,colSums(giant_norpmt_gteq3500umi_lteq15000umi_noe14b_mat) > 0]
+rm(giant_norpmt_gteq3500umi_lteq15000umi_noe14b_mat)
+
+save(giant_norpmt_gteq3500umi_lteq15000umi_noe14b_expressed_only_mat, file = 'giant_norpmt_gteq3500umi_lteq15000umi_noe14b_expressed_only_mat.Robj')
+save(giant_norpmt_gteq3500umi_lteq15000umi_noe14b_expressed_only_normed_mat, 'giant_norpmt_gteq3500umi_lteq15000umi_noe14b_expressed_only_normed_mat.Robj')
+
+```
+
+Create some data.frames and objects that will be used throughout.
+
+```{r}
+top_1000_dispersed_all_lineages_mat <- get_dispersion(giant_norpmt_gteq3500umi_lteq15000umi_noe14b_expressed_only_normed_mat)
+top_1000_dispersed_all_lineages_prcomp <- prcomp(top_1000_dispersed_all_lineages_mat, scale. = TRUE)
+top_1000_dispersed_all_lineages_rtsne_list  <- lapply(c(15,30,45,60), function(.perplexity)  {Rtsne::Rtsne(top_1000_dispersed_all_lineages_prcomp$x[,1:50], perplexity = .perplexity, pca = FALSE)})
+all_lineages_tree_splits_list <- get_treecuts(top_1000_dispersed_all_lineages_mat)
+all_lineages_sample_name_cluster_id_df <- get_sample_name_to_cluster_id_df(all_lineages_tree_splits_list[[3]], giant_norpmt_gteq3500umi_lteq15000umi_noe14b_expressed_only_normed_mat)
+all_lineages_with_time_df <- data.frame(top_1000_dispersed_all_lineages_rtsne_list[[4]]$Y, sample_name = rownames(giant_norpmt_gteq3500umi_lteq15000umi_noe14b_expressed_only_normed_mat), stringsAsFactors = FALSE) %>% dplyr::rename(D1 = X1, D2 = X2) %>% dplyr::mutate(sample_replicate = 'A', sample_date = sub("[A-Z]_.+", "", sample_name))
+cluster_to_cell_type_df <- dplyr::left_join(
+  data.frame(cluster_id = unique(all_lineages_cell_data_df$cluster_id), stringsAsFactors = FALSE),
+  rbind(
+    data.frame(cluster_id = c(35,9,32,6,20,1,16,10,11,8), cell_type = 'Granule', stringsAsFactors = FALSE),
+    data.frame(cluster_id = c(23,14,37,24,4), cell_type = 'GABA', stringsAsFactors = FALSE),
+    data.frame(cluster_id = c(15,51), cell_type = 'Purkinje', stringsAsFactors = FALSE),
+    data.frame(cluster_id = c(34,39), cell_type = 'Interneuron', stringsAsFactors = FALSE),
+    data.frame(cluster_id = c(29,48,18,22,36,40), cell_type = 'Glia', stringsAsFactors = FALSE),
+    data.frame(cluster_id = c(19,30,31,5,2,7,3,42,38), cell_type = 'Progenitor', stringsAsFactors = FALSE),
+    data.frame(cluster_id = c(25,13,43,21), cell_type = 'NTZ', stringsAsFactors = FALSE)
+    )
+) %>% dplyr::mutate(cell_type = ifelse(!is.na(cell_type), cell_type, 'Other'))
+
+temp_all_lineages_cell_data_df <- dplyr::full_join(all_lineages_with_time_df, all_lineages_sample_name_cluster_id_df)#  %>% dplyr::rename(tSNE1 = D1, tSNE2 = D2)
+all_lineages_cell_data_df <- dplyr::left_join(temp_all_lineages_cell_data_df, cluster_to_cell_type_df) %>% dplyr::rename(tSNE1 = D1, tSNE2 = D2)
+rm(all_lineages_with_time_df, all_lineages_sample_name_cluster_id_df)
+rm(temp_all_lineages_cell_data_df)
+
+```
+
+Setup some variables we will need throughout for generating figures, but is not cell-level data.
+```{r}
+sample_dates_order <- c('E10','E11','E12','E13','E14','E15','E16','E17','E18','P0','P4','P7','P10')
+sample_date_colors <- c('#ffc300', '#E18A00','#BE9C00','#8CAB00','#24B700','#00BE70','#00C1AB','#00BBDA','#00ACFC','#8B93FF','#FF65AC','#D575FE','#F962DD')
+cell_type_color_map_df <- data.frame(cell_type = c('Granule', 'NTZ', 'GABA', 'Progenitor', 'Purkinje', 'Interneuron', 'Glia', 'Other'), color = c('#ed2024', '#9e0b0f', '#2e3192', '#049948', '#27aae1', '#a0d6e8', '#f7941d', '#a7a9ac') , stringsAsFactors = FALSE)
+ensembl_to_geneid_df <-  AnnotationDbi::select(EnsDb.Mmusculus.v79, keys=colnames(giant_norpmt_gteq3500umi_lteq15000umi_noe14b_expressed_only_normed_mat), keytype = 'GENEID', by = 'GENEID', columns = c("GENENAME", "GENEID")) %>% dplyr::rename(ENSEMBL = GENEID)
+```
+
+#Fig 2a
+
+```{r}
+plot_fig2a <- function(colors_to_interpolate = c("yellow", "red", "blue"), point_size = 0.2)  {
+  temp_color_vec = colorRampPalette(colors_to_interpolate)(13)
+  names(temp_color_vec) <- sample_dates_order
+  all_lineages_cell_data_df <- data.frame(top_1000_dispersed_all_lineages_rtsne_list[[4]]$Y, sample_name = rownames(giant_norpmt_gteq3500umi_lteq15000umi_noe14b_expressed_only_normed_mat), stringsAsFactors = FALSE) %>% dplyr::rename(tSNE1 = X1, tSNE2 = X2) %>% dplyr::mutate(sample_replicate = 'A', sample_date = factor(sub("[A-Z]_.+", "", sample_name), levels = sample_dates_order, ordered = TRUE))
+
+  all_lineages_with_time_ggplot <- ggplot(all_lineages_cell_data_df, aes(x = tSNE1, y = tSNE2, color = sample_date)) + geom_point(size = point_size) + scale_color_manual(values = temp_color_vec) + theme_bw()  + guides(colour = guide_legend(override.aes = list(size=2))) 
+  all_lineages_with_time_ggplot
+}
+
+fig2a_with_legend_plot <- plot_fig2a(c('#ffc300', '#E18A00','#BE9C00','#8CAB00','#24B700','#00BE70','#00C1AB','#00BBDA','#00ACFC','#8B93FF','#FF65AC','#D575FE','#F962DD'))
+fig2a_plot <- fig2a_with_legend_plot + theme(legend.position = 'none')
+fig2a_legend <- get_legend(fig2a_with_legend_plot)
+ 
+```
+
+```{r}
+#plot without legend
+ggsave(plot = fig2a_plot, filename = "fig2a_plot.pdf", units = "in", width = 8, height = 8)
+ggsave(plot = fig2a_plot, filename = "/home/rob/Dropbox/Northcott_Easton Collaboration/Atlas_paper/Figures/fig2a_plot.pdf", units = "in", width = 8, height = 8)
+
+#plot legend only
+ggsave(plot = fig2a_legend$grobs[[1]], filename = "fig2a_legend.pdf", units = "in", width = 8, height = 8)
+ggsave(plot = fig2a_legend$grobs[[1]], filename = "/home/rob/Dropbox/Northcott_Easton Collaboration/Atlas_paper/Figures/fig2a_legend.pdf", units = "in", width = 8, height = 8)
+```
+
+
+#Fig 2b
+
+```{r}
+
+
+plot_fig2b <- function(data_df, cluster_to_cell_type_map_df)  {
+  ggplot(all_lineages_cell_data_df, aes(x = tSNE1, y = tSNE2, color = factor(cluster_id))) + geom_point() + geom_label(data = {group_by(all_lineages_cell_data_df, cluster_id) %>% dplyr::summarize(cluster_label_x = mean(tSNE1, na.rm = TRUE), cluster_label_y = mean(tSNE2, na.rm = TRUE))}, aes(x = cluster_label_x, y = cluster_label_y, label = as.character(cluster_id))) + theme_bw() + theme(legend.position = 'none') 
+}
+
+fig2b_plot <- plot_fig2b(all_lineages_cell_data_df, cluster_to_cell_type_df)
+fig2b_plot
+```
+
+```{r}
+ggsave(plot = fig2b_plot, filename = "fig2b.pdf", units = "in", width = 8, height = 8)
+ggsave(plot = fig2b_plot, filename = "/home/rob/Dropbox/Northcott_Easton Collaboration/Atlas_paper/Figures/fig2b.pdf", units = "in", width = 8, height = 8)
+```
+
+
+
+#Fig 2c
+```{r}
+granule_genes_for_heatmap <- data.frame(GENENAME= c('Selm','Pax6','Mfap4','NeuroD1','Atoh1','Barhl1','Ppp2r2c'), cell_type = 'Granule', stringsAsFactors = FALSE)
+ntz_genes_for_heatmap <- data.frame(GENENAME=c('Tmem163','Meis2','Lhx2','Lhx9','Grem2','Gng8','Evx1'), cell_type = 'NTZ', stringsAsFactors = FALSE)
+gaba_genes_for_heatmap <- data.frame(GENENAME=c('Lhx5','Lhx1','Gad2','Gad1', 'Foxp2', 'Pax2', 'Lbx1', 'Optc', 'Gm27199','Slc32a1'), cell_type = 'GABA', stringsAsFactors = FALSE)
+progenitor_genes_for_heatmap <- data.frame(GENENAME=c('Sparc', 'Nes', 'Id1', 'Id3', 'Hes5', 'Msx3'), cell_type = 'Progenitor', stringsAsFactors = FALSE)
+purkinje_genes_for_heatmap <- data.frame(GENENAME=c('Car8','Calb1','Pcp2','Rora'), cell_type = 'Purkinje', stringsAsFactors = FALSE)
+glia_genes_for_heatmap <- data.frame(GENENAME=c('Aldh1l1', 'Aldoc', 'Hopx', 'Timp4', 'Ndrg2', 'Gdf10', 'Sox9', 'Slc1a3', 'Sparcl1'), cell_type = 'Glia', stringsAsFactors = FALSE)
+other_genes_for_heatmap <- data.frame(GENENAME=c('Vtn', 'Bgn','Cldn5','Igfbp7','Vamp5','Clec1b','Dynlrb2','Meig1', 'Dcn','Slc6a13','Col3a1','Col1a2','Krt18', 'Colec12','Rspo1', 'Bambi','Hba-a2','Alas2','Hbb-bt','Fech','Ly86', 'Fcer1g', 'Olig1', 'Matn4','Isl1','Sncg','Dlk1','Tlx3'), cell_type = 'Other', stringsAsFactors = FALSE)
+
+marker_genes_by_cell_type_df <- rbind(progenitor_genes_for_heatmap, ntz_genes_for_heatmap, granule_genes_for_heatmap, gaba_genes_for_heatmap, purkinje_genes_for_heatmap, glia_genes_for_heatmap, other_genes_for_heatmap)
+
+assertthat::are_equal(marker_genes_by_cell_type_df$GENENAME, unique(marker_genes_by_cell_type_df$GENENAME))
+
+cluster_order <- c(3,7,30,5,2,19,38,42,31,43,21,13,25,32,8,11,6,16,9,1,20,10,35,24,14,23,4,37,15,51,34,39,48,29,22,18,36,40,53,41,55,56,57,44,49,45,46,27, 47,54,52,28,50,17,33,26)
+gene_order <- c('Sparc','Nes','Id1','Id3','Hes5','Msx3','Tmem163','Meis2','Lhx2','Lhx9','Grem2','Gng8','Evx1','Selm','Pax6','Mfap4','NeuroD1','Atoh1','Barhl1','Ppp2r2c','Lhx5','Lhx1','Gad2','Gad1','Foxp2','Gm27199','Slc32a1','Car8','Calb1','Pcp2','Rora','Pax2','Lbx1','Optc','Aldh1l1','Aldoc','Hopx','Timp4','Ndrg2','Gdf10','Sox9','Slc1a3','Sparcl1', 'Vtn', 'Bgn','Cldn5','Igfbp7','Vamp5','Clec1b','Dynlrb2','Meig1', 'Dcn','Slc6a13','Col3a1','Col1a2','Krt18', 'Colec12','Rspo1', 'Bambi','Hba-a2','Alas2','Hbb-bt','Fech','Ly86', 'Fcer1g', 'Olig1', 'Matn4','Isl1','Sncg','Dlk1','Tlx3')
+
+#Ensure all genes are accounted for in gene_order
+assertthat::are_equal(sort(gene_order), sort(marker_genes_by_cell_type_df$GENENAME))
+
+
+make_heatmap <- function(prop_expressed_by_cluster_df, genes_to_show_df, cluster_to_cell_df, cluster_colors_df, gene_order = NULL, cluster_order = NULL)  {
+  
+  cluster_id_to_color_df <- dplyr::left_join(cluster_to_cell_df, cluster_colors_df)
+  col_char <- cluster_id_to_color_df$color
+  names(col_char) <- cluster_id_to_color_df$cluster_id
+  print(col_char)
+  
+  col_char <- cluster_colors_df$color
+  names(col_char) <- cluster_colors_df$cell_type
+  filtered_prop_df <- dplyr::filter(prop_expressed_by_cluster_df, GENENAME %in% genes_to_show_df$GENENAME)# %>% dplyr::mutate(GENENAME = factor(GENENAME, levels = genes_to_show_df$GENENAME, ordered = TRUE))
+  if(!is.null(cluster_order))  {
+    filtered_prop_df <- dplyr::mutate(filtered_prop_df, cluster_id = factor(cluster_id, levels = cluster_order, ordered = TRUE))
+    cluster_to_cell_df <- dplyr::mutate(cluster_to_cell_df, cluster_id = factor(cluster_id, levels = cluster_order, ordered = TRUE)) %>% dplyr::arrange(cluster_id)  %>% dplyr::mutate(cell_type = factor(cell_type, levels = unique(cell_type), ordered = TRUE))
+  }
+  else  {
+    temp_mat <- reshape2::acast(filtered_prop_df, cluster_id ~ GENENAME, value.var = 'prop')
+    cluster_order <- hclust(dist(temp_mat))$order
+    print(cluster_order)
+    filtered_prop_df <- dplyr::mutate(filtered_prop_df, cluster_id = factor(cluster_id, levels = rownames(temp_mat)[cluster_order], ordered = TRUE))
+    cluster_to_cell_df <- dplyr::mutate(cluster_to_cell_df, cluster_id = factor(cluster_id, levels = rownames(temp_mat)[cluster_order], ordered = TRUE)) 
+  }
+  print(filtered_prop_df)
+  if(!is.null(gene_order))  {
+    filtered_prop_df <- dplyr::mutate(filtered_prop_df, GENENAME = factor(GENENAME, levels = rev(gene_order), ordered = TRUE))
+    #cluster_to_cell_df <- dplyr::mutate(cluster_to_cell_df, GENENAME = factor(GENENAME, levels = gene_order, ordered = TRUE))
+    print('argh')
+  }
+  else  {
+    temp_mat <- reshape2::acast(filtered_prop_df, GENENAME ~ cluster_id, value.var = 'prop')
+    gene_order <- hclust(dist(temp_mat))$order
+    print(gene_order)
+    filtered_prop_df <- dplyr::mutate(filtered_prop_df, GENENAME = factor(GENENAME, levels = rownames(temp_mat)[gene_order], ordered = TRUE))
+    #cluster_to_cell_df <- dplyr::mutate(cluster_to_cell_df, GENENAME = factor(GENENAME, levels = rownames(temp_mat)[gende_order], ordered = TRUE))
+  }
+  heatmap_plot <- ggplot(filtered_prop_df, aes( x=cluster_id, y=GENENAME, fill = prop)) + geom_tile(color = 'black') + theme_bw()  + theme(axis.text = element_text(size = 4), axis.text.x = element_text(angle = 90)) + scale_fill_gradient(low = 'white', high = 'darkred')
+  
+  print(col_char)
+  cell_type_plot <- ggplot(cluster_to_cell_df, aes(x = cluster_id, y= NA, fill = cell_type)) + geom_tile() + scale_fill_manual(values = col_char)
+  arrangeGrob(grobs = list(cell_type_plot, heatmap_plot), heights = c(1,2))# + theme_bw() 
+}
+
+#fig2c_plot <- make_heatmap(all_lineages_prop_df, marker_genes_by_cell_type_df, cluster_to_cell_type_df, cell_type_color_map_df, cluster_order = cluster_order, gene_order = gene_order)
+fig2c_no_unknowns_plot <- make_heatmap(dplyr::filter(all_lineages_prop_df, cluster_id %in% cluster_order), marker_genes_by_cell_type_df, dplyr::filter(cluster_to_cell_type_df, cell_type != 'Other'), cell_type_color_map_df, cluster_order = cluster_order, gene_order = gene_order)
+fig2c_no_unknowns_plot
+```
+
+```{r}
+ggsave(plot = fig2c_no_unknowns_plot, filename = "fig2c.pdf", units = "in", width = 8, height = 6)
+ggsave(plot = fig2c_no_unknowns_plot, filename = "/home/rob/Dropbox/Northcott_Easton Collaboration/Atlas_paper/Figures/fig2c.pdf", units = "in", width = 8, height = 6)
+```
+
+
+#Fig 2D
+```{r}
+target_genes <- c('Ptf1a', 'Atoh1', 'Barhl1', 'Lhx9', 'Meis2', 'Lhx5', 'Gad2', 'Calb1', 'Car8', 'Pax2', 'Lbx1', 'Hes5', 'Id3', 'Hopx', 'Slc1a3', 'Pax6')
+plot_layout <- cbind(
+  rbind(
+    matrix(rep(seq(1,14, by=2), each = 9), nrow = 3),
+    matrix(rep(seq(2,14, by=2), each = 9), nrow = 3)
+  ),
+  c(NA,NA,15,15,NA,NA)
+)
+  
+#plot_layout <- matrix(c(1,1,2,2,3,3,4,4,5,5,6,6), nrow = 2)
+#gene_color_df <- data.frame(GENENAME = c('Atoh1', 'Barhl1', 'Lhx9', 'Meis2', 'Lhx5', 'Calb1'), color = c('red', 'green'), stringsAsFactors = FALSE)
+
+generate_tsne_plots <- function(coordinates_df, expression_mat, markergenes_to_cell_type_df, celltype_to_color_df, ncol = 3)  {
+  ensembl_to_gene_to_color_df <- AnnotationDbi::select(EnsDb.Mmusculus.v79, keys=markergenes_to_cell_type_df$GENENAME, keytype = 'GENENAME', by = 'GENEID', columns = c("GENENAME", "GENEID")) %>% dplyr::rename(ENSEMBL = GENEID) %>% dplyr::left_join(., markergenes_to_cell_type_df) %>% dplyr::left_join(., celltype_to_color_df)
+  print(ensembl_to_gene_to_color_df)
+  max_value <- max(as.matrix(expression_mat[,ensembl_to_gene_to_color_df$ENSEMBL]))
+  tsne_plot_list <- lapply(ensembl_to_gene_to_color_df$GENENAME, function(.x)  {
+    expr_vec <- get_df_from_named_char_vector(as.matrix(expression_mat[, {dplyr::filter(ensembl_to_gene_to_color_df, GENENAME == .x)}$ENSEMBL]), c('sample_name', .x))
+    temp_merged_df <- dplyr::left_join(coordinates_df, expr_vec)
+    tsne_plot <- ggplot(temp_merged_df, aes_string(x = 'tSNE1', y = 'tSNE2', color = .x)) + geom_point(size = 0.5) + theme_bw() + scale_color_gradient(low = "grey", high = 'darkred', limits = c(0, max_value)) + theme(axis.title = element_blank(), axis.text = element_blank(), axis.ticks = element_blank(), legend.position = 'none') + ggtitle(label = .x)
+    return(tsne_plot)
+  })
+  legend <- ggplot(data.frame(log_exp = seq(0, max_value, length.out = 100), color = 1:100, stringsAsFactors = FALSE), aes(x=1, y=log_exp,fill=color)) + geom_tile() + theme(axis.title = element_blank(), axis.text.x = element_blank(), axis.ticks.x = element_blank(), legend.position = 'none', rect =element_blank(), plot.title = element_text(hjust = 0.5, size = 2)) + scale_fill_gradient(low = "grey", high = 'darkred') + ggtitle("Log2 expression")
+  print(length(tsne_plot_list))
+  return(tsne_plot_list)
+}
+
+write_fig2d_tsne_plots <- function(tsne_objects = list(), target_directory = character(), ...)  {
+  for(.fig in tsne_objects)  {
+    .filename <- paste0('fig2d_', .fig$labels$title, ".tiff")
+    ggsave(filename = file.path(target_directory, .filename), plot = .fig, ...)
+  }
+}
+fig2d_plots <- generate_tsne_plots(all_lineages_cell_data_df, giant_norpmt_gteq3500umi_lteq15000umi_noe14b_expressed_only_normed_mat,dplyr::filter(marker_genes_by_cell_type_df, GENENAME %in% target_genes), cell_type_color_map_df)
+
+write_fig2d_tsne_plots(fig2d_plots, "/home/rob/Dropbox/Northcott_Easton Collaboration/Atlas_paper/Figures/", width = 100, height = 100, units = 'mm', dpi = 300)
+
+```
+
+
+```{r}
+#ggsave(plot = fig2d_plot, filename = "fig2d.pdf", units = "in", width = 8, height = 5)
+#ggsave(plot = fig2d_plot, filename = "/home/rob/Dropbox/Northcott_Easton Collaboration/Atlas_paper/Figures/fig2d.pdf", units = "in", width = 8, height = 5)
+```
+
+
+
+#Fig 3a
+```{r}
+
+#34 and 39
+cell_type_by_sample_date_df <- dplyr::group_by(all_lineages_cell_data_df, sample_date, cell_type) %>% dplyr::summarize(n_cells = n()) %>% dplyr::mutate(cell_type_prop_by_date = n_cells/sum(n_cells)) %>% ungroup()
+
+make_celltype_by_time_plot <- function(cell_type_prop_by_time_df = data.frame(), cell_type_color_df = data.frame(), cell_type_order = character(), sample_date_order = character())  {
+  cell_type_props_with_colors_df <- dplyr::left_join(cell_type_prop_by_time_df, cell_type_color_df) %>% dplyr::mutate(cell_type = factor(cell_type, levels = cell_type_order, ordered = TRUE), sample_date = factor(sample_date, levels = sample_date_order, ordered = TRUE))
+  print(head(cell_type_props_with_colors_df))
+  ggplot(cell_type_props_with_colors_df, aes(x=sample_date, y=cell_type, size = cell_type_prop_by_date, color = color)) + geom_point() + scale_color_identity() + labs(size = 'Proportion', x = 'Sample Date', y = 'Cell Type')
+}
+
+cell_type_order = rev(c('Progenitor', 'NTZ', 'Granule', 'GABA', 'Purkinje', 'Interneuron', 'Glia', 'Other'))
+
+fig3a_plot <- make_celltype_by_time_plot(cell_type_by_sample_date_df, cell_type_color_map_df, cell_type_order = cell_type_order, sample_date_order = sample_dates_order)
+```
+
+```{r}
+#Splitting GABA
+ggsave(plot = fig3a_plot, filename = "fig3a.pdf", units = "in", width = 6, height = 2.5, device = "pdf")
+ggsave(plot = fig3a_plot, filename = "/home/rob/Dropbox/Northcott_Easton Collaboration/Atlas_paper/Figures/fig3a.pdf", units = "in", width = 6, height = 2.5, device = "pdf")
+
+```
+
+#Figure 3b 
+```{r}
+fig3b_plot <- ggplot(data = dplyr::left_join(all_lineages_cell_data_df, cell_type_color_map_df)) +  geom_point(aes(tSNE1, tSNE2, color = color), size = 0.75, alpha = 0.35) + scale_color_identity() + theme(axis.title = element_blank(), axis.text = element_blank(), axis.ticks = element_blank(), panel.grid = element_blank(), legend.position = 'none', plot.title = element_text(hjust = 0.5, size = 2)) 
+
+```
+
+```{r}
+#Fig3b split legend
+ggsave(plot = fig3b_plot, filename = "fig3b.pdf", units = "in", width = 2.5, height = 2.5)
+ggsave(plot = fig3b_plot, filename = "/home/rob/Dropbox/Northcott_Easton Collaboration/Atlas_paper/Figures/fig3b.pdf", units = "in", width = 2.5, height = 2.5)
+ggsave(plot = fig3b_plot, filename = "fig3b.tiff", units = "in", width = 2.5, height = 2.5, dpi = 300)
+ggsave(plot = fig3b_plot, filename = "/home/rob/Dropbox/Northcott_Easton Collaboration/Atlas_paper/Figures/fig3b.tiff", units = "in", width = 2.5, height = 2.5, dpi = 300)
+```
+
+#Fig 3c
+```{r}
+fig3c_plot <- ggplot(transform(all_lineages_cell_data_df, sample_date = NULL), aes(tSNE1, tSNE2), color = 'black') + geom_point(size = 0.75) + geom_point(data = dplyr::left_join(dplyr::mutate(all_lineages_cell_data_df, sample_date = factor(sample_date, levels = sample_dates_order, ordered = TRUE)), cell_type_color_map_df), aes(tSNE1, tSNE2, color = color), size = 0.75, alpha = 0.35) + facet_wrap( ~ sample_date) + scale_color_identity() + theme(axis.text = element_text(size = 5, family = 'sans'), text = element_text(size = 5, family='sans'))
+
+
+#####
+## Animation code is commented out.
+#####
+
+#fig3b_colored_by_ct_and_sd_gganimate <- ggplot(all_lineages_cell_data_df, aes(tSNE1, tSNE2), color = 'black') + geom_point(size = 0.75) + geom_point(data = dplyr::left_join(all_lineages_cell_data_df, cell_type_color_map_df), aes(tSNE1, tSNE2, color = color, frame = factor(as.character(sample_date))), size = 0.75, alpha = 0.35) + scale_color_identity()
+
+#gganimate(fig3b_colored_by_ct_and_sd_gganimate)
+```
+
+```{r}
+ggsave(plot = fig3c_plot, filename = "fig3c.pdf", units = "in", width = 8.5, height = 8.5)
+ggsave(plot = fig3c_plot, filename = "/home/rob/Dropbox/Northcott_Easton Collaboration/Atlas_paper/Figures/fig3c.pdf", units = "in", width = 10, height = 10)
+#Save tiff version since the pdf is too big to even manage
+ggsave(plot = fig3c_plot, filename = "fig3c.tiff", units = "in", width = 8.5, height = 8.5, dpi = 300)
+ggsave(plot = fig3c_plot, filename = "/home/rob/Dropbox/Northcott_Easton Collaboration/Atlas_paper/Figures/fig3c.tiff", units = "in", width = 8.5, height = 8.5, dpi = 300)
+```
+
+
+
+#Fig 4
+
+Figure 4 consists of 4 panels that show the development of the early gluta lineages.
+We load the required data and generate the figures below.
+
+```{r}
+suppressPackageStartupMessages({
+  library(monocle)
+})
+```
+
+Function Definitions
+```{r}
+generate_sample_tree_and_hm_grob <- function(tree_grob, hm_list, .theme = theme_bw())  {
+  tree_grob$layers[[2]]$aes_params$size = 1
+  arrangeGrob(grobs = list(tree_grob, hm_list$ph_res$gtable), layout_matrix = matrix(c(1,1,1,1,2,2,2,2), byrow = TRUE, nrow = 2), heights = c(0.3,0.7))
+}
+
+draw_pdf <- function(.grob, filename, .width = 8, .height = 8)  {
+  pdf(filename, width = .width, height = .height)
+  grid::grid.draw(.grob)
+  dev.off()
+}
+
+make_figure_4_inset <- function(cells_with_time_df, sample_name_to_cluster_id_df, cluster_ids_to_highlight = NULL)  {
+  temp_sample_data_df <- dplyr::full_join(cells_with_time_df, sample_name_to_cluster_id_df)
+  ggplot(data = dplyr::filter(temp_sample_data_df, !cluster_id %in% cluster_ids_to_highlight), aes(x = tSNE1, y = tSNE2)) + geom_point(size = 0.01) + geom_point(data = dplyr::filter(temp_sample_data_df, cluster_id %in% cluster_ids_to_highlight), aes(color = sample_date), size = 0.01) + theme_bw() + theme(axis.title = element_blank(), axis.text = element_blank(), axis.ticks = element_blank(), axis.line = element_blank(), panel.grid = element_blank(), panel.border = element_blank(), legend.position = 'none')
+}
+```
+
+Setup
+```{r}
+sample_to_cell_type_df<- dplyr::filter(all_lineages_cell_data_df, cluster_id %in% c(3,7,30,5,2,19,38,42,31,43,21,13,25,32,8,11,6,16,9,1,20,10,35,24,14,23,4,37,15,51,34,39)) %>% dplyr::mutate(cell_type = ifelse(cluster_id %in% c(3,7,5,2,19,42,31,38), 'progenitor', 'other')) %>% dplyr::mutate(cell_type = ifelse(cluster_id %in% c(43,21,13,25), 'NTZ', cell_type)) %>% dplyr::mutate(cell_type = ifelse(cluster_id %in% c(32,8,11,6,16,9,1,20,10,35), 'granules', cell_type)) %>% dplyr::mutate(cell_type = ifelse(cluster_id %in% c(24,14,23,4,37,15,51,34,39,30), 'gaba', cell_type))
+
+#load mouse TFs
+mouse_tf_df <- read.table('../ANALYSIS/mouse_tfs.tsv', sep = '\t', col.names = c('foo', 'ENSEMBL', 'ENTREZ', 'TF_NAME', "TF_FAMILY"), stringsAsFactors = FALSE)
+
+load("giant_norpmt_gteq3500umi_lteq15000umi_noe14b_expressed_only_mat.Robj")
+load("giant_norpmt_gteq3500umi_lteq15000umi_noe14b_expressed_only_normed_mat.Robj")
+
+load("/research/projects/gawadgrp/NEURO_10X/common/R/final_analysis/all_lineages_objects.Robj")
+
+
+
+```
+
+
+#Figure 4 -- Glutamatergic Lineage , TF only
+
+#Fig 4a
+```{r}
+gluta_early_granule_sample_names <-  sample_to_cell_type_df$sample_name[(sample_to_cell_type_df$cluster_id %in% c(31,32, 43,7,3,5,11,8,6,42)) | (sample_to_cell_type_df$cell_type == 'NTZ')]
+
+gluta_early_granule_sample_name_date_and_cluster_id <- dplyr::filter(all_lineages_cell_data_df, sample_name %in% gluta_early_granule_sample_names) %>% dplyr::mutate(sample_date = factor(sub("^([EP][01-9]+).+", "\\1", sample_name)), cluster_id = factor(cluster_id))
+gluta_early_granule_sampled_df <- dplyr::filter(gluta_early_granule_sample_name_date_and_cluster_id , sample_name %in% gluta_early_granule_sample_names) %>% dplyr::group_by(cluster_id, sample_date) %>% dplyr::mutate(select = ifelse(runif(n=length(sample_name)) <  min(1.0, 50/length(sample_name)), TRUE, FALSE)) %>% dplyr::filter(select == TRUE)
+
+gluta_early_granule_samples_tf_mat <- as.matrix(giant_norpmt_gteq3500umi_lteq15000umi_noe14b_expressed_only_mat)[gluta_early_granule_sampled_df$sample_name,colnames(giant_norpmt_gteq3500umi_lteq15000umi_noe14b_expressed_only_mat) %in% unique(mouse_tf_df$ENSEMBL)]
+rm(giant_norpmt_gteq3500umi_lteq15000umi_noe14b_expressed_only_mat)
+```
+
+Application of monocle to the transcription factor expression profiles of the top 1000 cells of the glutamatergic lineage 
+
+We run monocle below, using only transcription factors present in at least 5% of the glutamatergic cells.
+
+```{r}
+gluta_early_granule_samples_tf_final_mat <- gluta_early_granule_samples_tf_mat[,apply(gluta_early_granule_samples_tf_mat,2,function(.x)  {mean(.x > 0) >= 0.05})]
+
+library(EnsDb.Mmusculus.v79)
+
+gluta_early_granule_fdata_df <- AnnotatedDataFrame({dplyr::left_join(data.frame(GENEID = colnames(gluta_early_granule_samples_tf_final_mat), stringsAsFactors = FALSE), AnnotationDbi::select(EnsDb.Mmusculus.v79, keys = colnames(gluta_early_granule_samples_tf_final_mat), keytype = 'GENEID', columns = c('GENEID', 'GENENAME'))) %>% dplyr::mutate(GENENAME = ifelse(is.na(GENENAME), GENEID, GENENAME)) %>% dplyr::rename(ENSEMBL = GENEID, gene_short_name = GENENAME) %>% tibble::column_to_rownames('ENSEMBL')})
+
+gluta_early_granule_pdata_df <- AnnotatedDataFrame({data.frame(sample_name = rownames(gluta_early_granule_samples_tf_final_mat), stringsAsFactors = FALSE) %>% dplyr::mutate(sample_date =sub("[A-Z]_.+", "", sample_name), sample_date = factor(sample_date, levels = sample_dates_order, ordered = TRUE)) %>% tibble::column_to_rownames('sample_name')})
+
+set.seed(12345)
+cds_gluta_early_granule <- newCellDataSet(as(t(gluta_early_granule_samples_tf_final_mat), 'sparseMatrix'), phenoData = gluta_early_granule_pdata_df, featureData = gluta_early_granule_fdata_df , expressionFamily = negbinomial.size())
+
+#rm(giant_norpmt_gteq3500umi_lteq15000umi_noe14b_expressed_only_mat)
+
+cds_gluta_early_granule <- estimateSizeFactors(cds_gluta_early_granule)
+cds_gluta_early_granule <- estimateDispersions(cds_gluta_early_granule)
+set.seed(12345)
+
+cds_gluta_early_granule <- reduceDimension(cds_gluta_early_granule[,sample(1:ncol(cds_gluta_early_granule), 1000, replace = FALSE)], max_components=2)
+#cds <- reduceDimension(cds_gluta_early_granule, max_components=2)
+cds_gluta_early_granule <- orderCells(cds_gluta_early_granule)
+cds_gluta_early_granule <- orderCells(cds_gluta_early_granule, root_state = 15)
+
+plot_cell_trajectory(cds_gluta_early_granule, color_by="State")
+plot_cell_trajectory(cds_gluta_early_granule, color_by="Pseudotime")
+plot_cell_trajectory(cds_gluta_early_granule, color_by="sample_date")
+fig4a_plot <- plot_cell_trajectory(cds_gluta_early_granule, color_by="sample_date", show_branch_points = FALSE) + theme(legend.position = 'none')
+ggsave("fig4a.pdf", plot = fig4a_plot, width = 4, height = 4, units = "in")
+ggsave("/home/rob/Dropbox/Northcott_Easton Collaboration/Atlas_paper/Figures/fig4a.pdf", plot = fig4a_plot, width = 4, height = 4, units = "in")
+
+gluta_early_granule_cluster_ids <- sort(unique({dplyr::filter(all_lineages_cell_data_df, sample_name %in% rownames(pData(cds_gluta_early_granule))) %>% pull(cluster_id)}))
+
+fig4a_inset_plot <- make_figure_4_inset(all_lineages_cell_data_df, all_lineages_cell_data_df, cluster_ids_to_highlight = gluta_early_granule_cluster_ids)
+ggsave("fig4a_inset.pdf", plot = fig4a_inset_plot, width = 3, height = 3, units = "in")
+ggsave("/home/rob/Dropbox/Northcott_Easton Collaboration/Atlas_paper/Figures/fig4a_inset.pdf", plot = fig4a_inset_plot, width = 3, height = 3, units = "in")
+#Save as tiffs due to file size of pdf
+ggsave("fig4a_inset.tiff", plot = fig4a_inset_plot, width = 3, height = 3, units = "in", dpi = 300)
+ggsave("/home/rob/Dropbox/Northcott_Easton Collaboration/Atlas_paper/Figures/fig4a_inset.tiff", plot = fig4a_inset_plot, width = 3, height = 3, units = "in", dpi = 300)
+```
+
+#Figure 4B
+
+Below we plot some expression patterns of known markers along the monocle tree
+```{r}
+gluta_topology_validation_genes <- subset(fData(cds_gluta_early_granule), gene_short_name %in% c('Hes5', 'Id3', 'Pax6', 'Zic1', 'Neurod1', 'Meis2', 'Lhx9'))
+gluta_topology_validation_ensembl <- row.names(gluta_topology_validation_genes)
+gluta_topology_validation_genename <- gluta_topology_validation_genes$gene_short_name
+fig4b_plot <- plot_genes_branched_pseudotime(cds_gluta_early_granule[gluta_topology_validation_ensembl,], branch_point = 5, color_by = 'sample_date', ncol = 1, panel_order = c('Hes5', 'Id3', 'Pax6', 'Zic1', 'Neurod1', 'Meis2', 'Lhx9'), branch_labels = c('DCN', 'Granule'))
+```
+
+```{r}
+ggsave(plot = fig4b_plot, filename = "fig4b.pdf", units = "in", width = 4, height = 7)
+ggsave(plot = fig4b_plot, filename = "/home/rob/Dropbox/Northcott_Easton Collaboration/Atlas_paper/Figures/fig4b.pdf", units = "in", width = 4, height = 7)
+```
+
+#Figure 4C
+
+Below, we plot a branched heatmap showing the expression patters of branch specific transcription factors.
+
+```{r}
+beam_gluta_early_granule_res <- BEAM(cds_gluta_early_granule, branch_point=5, cores = detectCores(), relative_expr = FALSE)
+beam_gluta_early_granule_res <- tibble::rownames_to_column(beam_gluta_early_granule_res, 'ENSEMBL') %>% dplyr::arrange(qval)
+
+#plot_genes_branched_heatmap(cds_gluta_early_granule, branch_point = 4, use_gene_short_name = TRUE, show_rownames = TRUE)
+beam_gluta_early_granule_sig_genes <- as.character(dplyr::filter(beam_gluta_early_granule_res, qval <= 5e-5) %>% dplyr::pull(fd))
+
+gluta_early_granule_heatmamp_unique_list <- plot_genes_branched_heatmap(cds_gluta_early_granule[rownames(fData(cds_gluta_early_granule))[fData(cds_gluta_early_granule)$gene_short_name %in% beam_gluta_early_granule_sig_genes],], branch_point = 5, use_gene_short_name = TRUE, show_rownames = TRUE, return_heatmap = TRUE)    
+draw_pdf(gluta_early_granule_heatmamp_unique_list$ph_res$gtable, filename = 'fig4c.pdf', .width = 8, .height = 12)
+draw_pdf(gluta_early_granule_heatmamp_unique_list$ph_res$gtable, filename = '/home/rob/Dropbox/Northcott_Easton Collaboration/Atlas_paper/Figures/fig4c.pdf', .width = 8, .height = 12)
+```
+
+#Figure 4D
+
+We construct a transcription factor correlation network of the glutamatergic cells, including the mature cells. This is based on a sample of cells where each cluster has been subsampled to contain cells more evenly distributed between sample dates. Furthermore, the columns of the count matrix are restricted to ENSEMBL IDs corresponding to TFs, as annotated in AnimalTFDB.
+
+```{r}
+library(igraph)
+library(networkD3)
+
+get_maximal_sample_date_expression <- function(normed_expr_mat = matrix(), sample_name_to_sample_date_df = data.frame())  {
+  normed_expr_mat <- normed_expr_mat[,apply(normed_expr_mat, 2, function(.col)  {sum(.col > 0) > 0})]
+  temp_df <- reshape2::melt(normed_expr_mat, varnames = c('sample_name', 'ENSEMBL'), value.name = 'log_expr', stringsAsFactors = FALSE) %>% dplyr::mutate(sample_name = as.character(sample_name), ENSEMBL = as.character(ENSEMBL))
+  peak_sample_date_df <- dplyr::left_join(temp_df, sample_name_to_sample_date_df) %>% dplyr::group_by(ENSEMBL, sample_date) %>% dplyr::summarize(prop_expr = mean(log_expr > 0), mean_expr = mean(log_expr)) %>% dplyr::ungroup()
+  final_df <- plyr::ddply(peak_sample_date_df, .variables = 'ENSEMBL', .fun = function(.df)  {
+    max_inds <- which(.df$prop_expr == max(.df$prop_expr))
+    if(length(max_inds) > 1)  {
+      max_inds <- which(.df$mean_expr == max(.df$mean_expr))
+    }
+    if(length(max_inds) > 1)  {
+      warning(.df$ENSEMBL[1], max_inds)
+      warning(.df)
+    }
+    return(data.frame(peak_expr = .df$sample_date[max_inds], stringsAsFactors = FALSE))
+  })
+  return(final_df)
+}
+
+load("giant_norpmt_gteq3500umi_lteq15000umi_noe14b_expressed_only_normed_mat.Robj")
+
+generate_correlation_network_figure <- function(tf_mat = matrix())  {
+  tfs_cor <- cor(tf_mat)
+  tfs_cor_mat <- as.matrix(tfs_cor)
+  
+  tfs_cor_mat[tfs_cor_mat < 0.25] <- 0
+  diag(tfs_cor_mat) <- 0
+  
+  
+  tfs_cor_mat <- tfs_cor_mat[rowSums(tfs_cor_mat) > 0, colSums(tfs_cor_mat) > 0]
+  tfs_cor_mat[! upper.tri(tfs_cor_mat)] <- 0
+  tfs_cor_igraph <- graph_from_adjacency_matrix(tfs_cor_mat, mode = 'undirected', weighted = TRUE)
+  
+  tf_peak_expr_date_df <- get_maximal_sample_date_expression(tf_mat, all_lineages_cell_data_df)
+  tf_peak_expr_date_df <- dplyr::left_join(tf_peak_expr_date_df, {AnnotationDbi::select(EnsDb.Mmusculus.v79, keys = tf_peak_expr_date_df$ENSEMBL, keytype = 'GENEID', columns = c('GENEID', 'GENENAME')) %>% dplyr::rename(ENSEMBL = GENEID)})
+
+  V(tfs_cor_igraph)$name <- AnnotationDbi::select(EnsDb.Mmusculus.v79, keys = V(tfs_cor_igraph)$name, keytype = 'GENEID', columns = c('GENEID', 'GENENAME'))$GENENAME
+  V(tfs_cor_igraph)$peak_date <- {dplyr::left_join(data.frame(GENENAME=V(tfs_cor_igraph)$name, stringsAsFactors = FALSE), tf_peak_expr_date_df)$peak_expr}
+  network_ggplot <- ggnet2(net =tfs_cor_igraph, node.size = 8, group = 'peak_expr', edge.size = 0.3,  color = sample_date_colors[as.integer(factor(V(tfs_cor_igraph)$peak_date, levels = sample_dates_order, ordered = TRUE))],  edge.color = "grey", label = TRUE, label.size = 3)
+  return(network_ggplot)
+}
+
+
+#Full glutas
+load("giant_norpmt_gteq3500umi_lteq15000umi_noe14b_expressed_only_normed_mat.Robj")
+full_glutas_cluster_ids <- c(unique(dplyr::filter(cluster_to_cell_type_df, cell_type %in% c('Granule', 'NTZ')) %>% dplyr::pull(cluster_id)), 3,7,5,31,42)
+glutas_full_tfs_normed_mat <- as.matrix(giant_norpmt_gteq3500umi_lteq15000umi_noe14b_expressed_only_normed_mat[{dplyr::filter(all_lineages_cell_data_df, cluster_id %in% full_glutas_cluster_ids) %>% dplyr::pull(sample_name)}, colnames(giant_norpmt_gteq3500umi_lteq15000umi_noe14b_expressed_only_normed_mat) %in% mouse_tf_df$ENSEMBL])
+glutas_full_tfs_final_mat <- glutas_full_tfs_normed_mat[,apply(glutas_full_tfs_normed_mat,2,function(.x)  {mean(.x > 0) >= 0.05})]
+
+glutas_full_tfs_final_cor_ggplot <- generate_correlation_network_figure(glutas_full_tfs_final_mat)
+```
+
+```{r}
+ggsave("fig_4d.pdf", glutas_full_tfs_final_cor_ggplot, height = 10, width = 10, units="in")
+ggsave("/home/rob/Dropbox/Northcott_Easton Collaboration/Atlas_paper/Figures/fig_4d.pdf", glutas_full_tfs_final_cor_ggplot, width = 10, height = 10, units = "in")
+```
+
+#Figure 5
+
+```{r}
+#????????????????????????????????????
+```
+
+###############################################
+#
+#  Supplementary Figures/Tables
+#
+###############################################
+
+
+#Supplementary Figure 1
+```{r}
+cell_total_counts <- rowSums(as.matrix(giant_norpmt_gteq3500umi_lteq15000umi_noe14b_expressed_only_mat))
+rm(giant_norpmt_gteq3500umi_lteq15000umi_noe14b_expressed_only_mat)
+
+sup_fig_1a_df <- dplyr::mutate(all_lineages_cell_data_df, sample_replicate=sub("_.+", "", sample_name), sample_replicate=sub("^.+(.)$", "\\1", sample_replicate)) #  %>% dplyr::group_by(sample_date, sample_replicate) %>% dplyr::summarize(n_samples = n())
+sup_fig_1a_df <- dplyr::left_join(sup_fig_1a_df, {as.data.frame(cell_total_counts, stringsAsFactors = FALSE) %>% tibble::rownames_to_column('sample_name')})
+
+sup_fig_1a_df <-  plyr::ddply(.data = sup_fig_1a_df, .variables = 'sample_date', .fun = function(.df)  {
+  replicates <- unique(.df$sample_replicate)
+  assertthat::are_equal(length(replicates), 2)
+  new_replicates <- ifelse(.df$sample_replicate == replicates[1], 'A', 'B')
+  .df$sample_replicate <- new_replicates
+  return(.df)
+})
+
+sup_fig1_plot <- ggplot(sup_fig_1a_df, aes(x = factor(sample_date, levels=sample_dates_order, ordered = TRUE), y=cell_total_counts, color = sample_replicate)) + geom_jitter(alpha = 0.1, size = 0.3, height = 0) + geom_point(data={dplyr::group_by(sup_fig_1a_df, sample_replicate, sample_date) %>% dplyr::summarize(mean_umi_count = mean(cell_total_counts))}, aes(y=mean_umi_count)) + labs(x = 'Sample Date', y = 'UMI Count', color = 'Sample Replicate') + theme(text = element_text(size = 10), axis.text = element_text(size = 10))
+
+```
+
+```{r}
+ggsave(plot = sup_fig1_plot, filename = "figure_S1.pdf", units = "in", width = 8.5, height = 7)
+ggsave(plot = sup_fig1_plot, filename = "/home/rob/Dropbox/Northcott_Easton Collaboration/Atlas_paper/figure_S1.pdf", units = "in", width = 8.5, height = 7)
+```
+
+
+#supplementary Table 1
+```{r}
+sup_table_1_df <- sup_fig_1a_df %>% dplyr::group_by(sample_date, sample_replicate) %>% dplyr::summarize(n_samples = n())
+as.data.frame(sup_table_1_df) %>% dplyr::mutate(sample_date = factor(sample_date, levels = sample_dates_order, ordered = TRUE )) %>% dplyr::arrange(sample_date)
+```
+
+```{r}
+write.table(sup_table_1_df, file = "sup_table1.tsv", quote= FALSE, sep="\t")
+```
+
+
+#Supplementary Figure 2
+```{r}
+sup_fig2_df <- dplyr::group_by(sup_fig_1a_df, cluster_id, sample_replicate, sample_date) %>% dplyr::summarize(sample_count = n()) %>% dplyr::mutate(sample_replicate_date_freq = sample_count/sum(sample_count))
+
+sup_fig2_plot <- ggplot(sup_fig2_df, aes(y = sample_replicate_date_freq, x=sample_replicate, fill = factor(sample_date, levels = sample_dates_order, ordered = TRUE))) + geom_bar(stat = 'identity') + scale_fill_manual(values = sample_date_colors) + facet_wrap(~cluster_id, ncol=4) + coord_flip() + xlab('Sample Date Frequency') + ylab('Sample Replicate') + theme(axis.text = element_text(size = 7, family = 'sans'), text = element_text(size = 5, family='sans')) + labs(fill = 'Sample Date')
+```
+
+Significance of statistical comparisons
+```{r}
+sample_rep_date_comp_df <- plyr::ddply(sup_fig2_df, .variables = 'cluster_id', .fun = function(.cluster_df)  {
+  assertthat::are_equal(names(table(.cluster_df$sample_replicate)), c('A', 'B'))
+  unique_dates <- unique(.cluster_df$sample_date)
+  n_dates = length(unique_dates)
+  seed_mat <- matrix(rep(0, n_dates), nrow = 1)
+  colnames(seed_mat)  <- unique_dates
+  print(unique_dates)
+  a_mat <- seed_mat
+  a_df <- dplyr::filter(.cluster_df, sample_replicate == 'A')
+  a_colnames <- a_df$sample_date
+  a_values <- a_df %>% pull(sample_count)
+  a_mat[,a_colnames] <- a_values
+  b_mat <- seed_mat
+  b_df <- dplyr::filter(.cluster_df, sample_replicate == 'B')
+  b_colnames <- b_df$sample_date
+  b_values <- b_df %>% pull(sample_count)
+  b_mat[,b_colnames] <- b_values
+  #comp_list <- list(a_mat, b_mat)
+  #print(comp_list)
+  #test_res <- Xmcupo.sevsample(comp_list)
+  test_res <- chisq.test(x = a_mat[1,], y = b_mat[1,], simulate.p.value = TRUE)
+  return(data.frame(sample_rep_date_comp_pval= test_res$p.value, stringsAsFactors = FALSE))
+})
+```
+
+
+```{r}
+ggsave(plot = sup_fig2_plot, filename = "figure_S2.pdf", units = "in", width = 8.5, height = 11)
+ggsave(plot = sup_fig2_plot, filename = "/home/rob/Dropbox/Northcott_Easton Collaboration/Atlas_paper/figure_S2.pdf", units = "in", width = 8.5, height = 11)
+```
+
+#Supplementary Figure 3
+
+```{r}
+all_lineages_n10_enriched_genes_by_cluster_df <- get_enriched_genes_in_each_cluster(all_lineages_cell_data_df, expression_mat = giant_norpmt_gteq3500umi_lteq15000umi_noe14b_expressed_only_normed_mat, top_n = 10)
+#all_lineages_clusters_scatterplot <- get_clustered_scatterplot(top_1000_dispersed_all_lineages_rtsne_list[[4]]$Y, all_lineages_sample_name_cluster_id_df)
+all_lineages_temp_top10_df <- get_mean_exp_by_cluster_with_genename_df(as.matrix(giant_norpmt_gteq3500umi_lteq15000umi_noe14b_expressed_only_normed_mat[,unique(all_lineages_n10_enriched_genes_by_cluster_df$ENSEMBL)]), sample_name_to_cluster_id_df = all_lineages_cell_data_df)
+all_lineages_temp_mat <- reshape2::acast(all_lineages_temp_top10_df, cluster_id ~ GENENAME, value.var = 'mean_norm_expr')
+
+all_lineages_prop_df <- get_prop_expressed_df(sample_to_cluster_df = all_lineages_cell_data_df, expression_mat = as.matrix(giant_norpmt_gteq3500umi_lteq15000umi_noe14b_expressed_only_normed_mat[,unique(all_lineages_n10_enriched_genes_by_cluster_df$ENSEMBL)]))
+
+sup_fig3_plot <- plot_ordered_heatmap(all_lineages_prop_df)
+
+```
+
+```{r}
+ggsave(plot = sup_fig3_plot, filename = "figure_S3.pdf", units = "in", width = 11, height = 8.5)
+ggsave(plot = sup_fig3_plot, filename = "/home/rob/Dropbox/Northcott_Easton Collaboration/Atlas_paper/figure_S3.pdf", units = "in", width = 11, height = 8.5)
+```
+
+#Supplementary Figure 4 -- GABAergic Lineage , TF only
+
+#Fig S4a
+```{r}
+gaba_sample_names <-  dplyr::filter(all_lineages_cell_data_df, cell_type %in% c("GABA", "Interneuron", "Purkinje")) %>% dplyr::pull(sample_name) 
+
+gaba_sample_name_date_and_cluster_id <- dplyr::filter(all_lineages_cell_data_df, sample_name %in% gaba_sample_names) %>% dplyr::mutate(sample_date = factor(sub("^([EP][01-9]+).+", "\\1", sample_name)), cluster_id = factor(cluster_id))
+
+gaba_sampled_df <- dplyr::filter(gaba_sample_name_date_and_cluster_id , sample_name %in% gaba_sample_names) %>% dplyr::group_by(cluster_id, sample_date) %>% dplyr::mutate(select = ifelse(runif(n=length(sample_name)) <  min(1.0, 50/length(sample_name)), TRUE, FALSE)) %>% dplyr::filter(select == TRUE)
+
+gaba_samples_tf_mat <- as.matrix(giant_norpmt_gteq3500umi_lteq15000umi_noe14b_expressed_only_mat)[gaba_sampled_df$sample_name,colnames(giant_norpmt_gteq3500umi_lteq15000umi_noe14b_expressed_only_mat) %in% unique(mouse_tf_df$ENSEMBL)]
+rm(giant_norpmt_gteq3500umi_lteq15000umi_noe14b_expressed_only_mat)
+```
+
+Application of monocle to the transcription factor expression profiles of the top 1000 cells of the GABAergic lineage 
+
+We run monocle below, using only transcription factors present in at least 5% of the GABAergic cells.
+
+```{r}
+gaba_samples_tf_final_mat <- gaba_samples_tf_mat[,apply(gaba_samples_tf_mat,2,function(.x)  {mean(.x > 0) >= 0.05})]
+
+library(EnsDb.Mmusculus.v79)
+
+gaba_fdata_df <- AnnotatedDataFrame({dplyr::left_join(data.frame(GENEID = colnames(gaba_samples_tf_final_mat), stringsAsFactors = FALSE), AnnotationDbi::select(EnsDb.Mmusculus.v79, keys = colnames(gaba_samples_tf_final_mat), keytype = 'GENEID', columns = c('GENEID', 'GENENAME'))) %>% dplyr::mutate(GENENAME = ifelse(is.na(GENENAME), GENEID, GENENAME)) %>% dplyr::rename(ENSEMBL = GENEID, gene_short_name = GENENAME) %>% tibble::column_to_rownames('ENSEMBL')})
+
+gaba_pdata_df <- AnnotatedDataFrame({data.frame(sample_name = rownames(gaba_samples_tf_final_mat), stringsAsFactors = FALSE) %>% dplyr::mutate(sample_date =sub("[A-Z]_.+", "", sample_name), sample_date = factor(sample_date, levels = sample_dates_order, ordered = TRUE)) %>% tibble::column_to_rownames('sample_name')})
+
+set.seed(12345)
+cds_gaba_granule <- newCellDataSet(as(t(gaba_samples_tf_final_mat), 'sparseMatrix'), phenoData = gaba_pdata_df, featureData = gaba_fdata_df , expressionFamily = negbinomial.size())
+
+#rm(giant_norpmt_gteq3500umi_lteq15000umi_noe14b_expressed_only_mat)
+
+cds_gaba_granule <- estimateSizeFactors(cds_gaba_granule)
+cds_gaba_granule <- estimateDispersions(cds_gaba_granule)
+set.seed(12345)
+
+cds_gaba_granule <- reduceDimension(cds_gaba_granule[,sample(1:ncol(cds_gaba_granule), 1000, replace = FALSE)], max_components=2)
+#cds <- reduceDimension(cds_gaba_granule, max_components=2)
+cds_gaba_granule <- orderCells(cds_gaba_granule)
+cds_gaba_granule <- orderCells(cds_gaba_granule, root_state = 7)
+
+plot_cell_trajectory(cds_gaba_granule, color_by="State")
+plot_cell_trajectory(cds_gaba_granule, color_by="Pseudotime")
+plot_cell_trajectory(cds_gaba_granule, color_by="sample_date")
+figS4a_plot <- plot_cell_trajectory(cds_gaba_granule, color_by="sample_date", show_branch_points = FALSE) + theme(legend.position = 'none')
+ggsave("figS4a.pdf", plot = figS4a_plot, width = 4, height = 4, units = "in")
+ggsave("/home/rob/Dropbox/Northcott_Easton Collaboration/Atlas_paper/Figures/figS4a.pdf", plot = figS4a_plot, width = 4, height = 4, units = "in")
+
+gaba_cluster_ids <- sort(unique({dplyr::filter(all_lineages_cell_data_df, sample_name %in% rownames(pData(cds_gaba_granule))) %>% pull(cluster_id)}))
+
+figS4a_inset_plot <- make_figure_4_inset(all_lineages_cell_data_df, all_lineages_cell_data_df, cluster_ids_to_highlight = gaba_cluster_ids)
+ggsave("figS4a_inset.pdf", plot = figS4a_inset_plot, width = 3, height = 3, units = "in")
+ggsave("/home/rob/Dropbox/Northcott_Easton Collaboration/Atlas_paper/Figures/figS4a_inset.pdf", plot = figS4a_inset_plot, width = 3, height =3, units = "in")
+#Save as tiffs due to file size of pdf
+ggsave("figS4a_inset.tiff", plot = figS4a_inset_plot, width = 3, height = 3, units = "in", dpi = 300)
+ggsave("/home/rob/Dropbox/Northcott_Easton Collaboration/Atlas_paper/Figures/figS4a_inset.tiff", plot = figS4a_inset_plot, width = 3, height =3, units = "in", dpi = 300)
+```
+
+#Fig S4B
+
+Below we plot some expression patterns of known markers along the monocle tree
+```{r}
+gaba_topology_validation_genes <- subset(fData(cds_gaba_granule), gene_short_name %in% c('Lhx5', 'Rora', 'Pax2', 'Lbx1'))
+gaba_topology_validation_ensembl <- row.names(gaba_topology_validation_genes)
+gaba_topology_validation_genename <- gaba_topology_validation_genes$gene_short_name
+figS4b_plot <- plot_genes_branched_pseudotime(cds_gaba_granule[gaba_topology_validation_ensembl,], branch_point = 8, color_by = 'sample_date', ncol = 1, panel_order = c('Lhx5', 'Rora', 'Pax2', 'Lbx1'), branch_labels = c('Interneuron', 'Purkinje'))
+```
+
+```{r}
+ggsave(plot = figS4b_plot, filename = "figS4b.pdf", units = "in", width = 4, height = 7)
+ggsave(plot = figS4b_plot, filename = "/home/rob/Dropbox/Northcott_Easton Collaboration/Atlas_paper/Figures/figS4b.pdf", units = "in", width = 4, height = 7)
+```
+
+#Fig S4C
+
+Below, we plot a branched heatmap showing the expression patters of branch specific transcription factors.
+
+```{r}
+beam_gaba_res <- BEAM(cds_gaba_granule, branch_point=8, cores = detectCores(), relative_expr = FALSE)
+beam_gaba_res <- tibble::rownames_to_column(beam_gaba_res, 'ENSEMBL') %>% dplyr::arrange(qval)
+
+#plot_genes_branched_heatmap(cds_gaba_granule, branch_point = 4, use_gene_short_name = TRUE, show_rownames = TRUE)
+beam_gaba_sig_genes <- as.character(dplyr::filter(beam_gaba_res, qval <= 5e-5) %>% dplyr::pull(fd))
+
+gaba_heatmamp_unique_list <- plot_genes_branched_heatmap(cds_gaba_granule[rownames(fData(cds_gaba_granule))[fData(cds_gaba_granule)$gene_short_name %in% beam_gaba_sig_genes],], branch_point = 8, use_gene_short_name = TRUE, show_rownames = TRUE, return_heatmap = TRUE)    
+draw_pdf(gaba_heatmamp_unique_list$ph_res$gtable, filename = 'figS4c.pdf', .width = 8, .height = 12)
+draw_pdf(gaba_heatmamp_unique_list$ph_res$gtable, filename = '/home/rob/Dropbox/Northcott_Easton Collaboration/Atlas_paper/Figures/figS4c.pdf', .width = 8, .height = 12)
+```
+
+#Fig S4D
+
+We construct a transcription factor correlation network of the glutamatergic cells, including the mature cells. This is based on a sample of cells where each cluster has been subsampled to contain cells more evenly distributed between sample dates. Furthermore, the columns of the count matrix are restricted to ENSEMBL IDs corresponding to TFs, as annotated in AnimalTFDB.
+
+```{r}
+#library(igraph)
+#library(networkD3)
+
+#Full gaba
+load("giant_norpmt_gteq3500umi_lteq15000umi_noe14b_expressed_only_normed_mat.Robj")
+full_gaba_cluster_ids <- dplyr::filter(cluster_to_cell_type_df, cell_type %in% c("GABA", "Interneuron", "Purkinje")) %>% dplyr::pull(cluster_id)
+gaba_full_tfs_normed_mat <- as.matrix(giant_norpmt_gteq3500umi_lteq15000umi_noe14b_expressed_only_normed_mat[{dplyr::filter(all_lineages_cell_data_df, cluster_id %in% full_gaba_cluster_ids) %>% dplyr::pull(sample_name)}, colnames(giant_norpmt_gteq3500umi_lteq15000umi_noe14b_expressed_only_normed_mat) %in% mouse_tf_df$ENSEMBL])
+rm(giant_norpmt_gteq3500umi_lteq15000umi_noe14b_expressed_only_normed_mat)
+gaba_full_tfs_final_mat <- gaba_full_tfs_normed_mat[,apply(gaba_full_tfs_normed_mat,2,function(.x)  {mean(.x > 0) >= 0.05})]
+
+gaba_full_tfs_final_cor_ggplot <- generate_correlation_network_figure(gaba_full_tfs_final_mat)
+```
+
+```{r}
+ggsave("figS4d.pdf", gaba_full_tfs_final_cor_ggplot, height = 10, width = 10, units="in")
+ggsave("/home/rob/Dropbox/Northcott_Easton Collaboration/Atlas_paper/Figures/figS4d.pdf", gaba_full_tfs_final_cor_ggplot, width = 10, height = 10, units = "in")
+```
+
+#CellSeek export
+
+Next, we export some metadata about the cells to a tsv file so it can be used in the Cell Seek app
+```{r}
+write.table(dplyr::select(all_lineages_cell_data_df, -sample_replicate), file = 'cellseek_metadata.tsv', sep="\t")
+```
+
+################################
+#
+#            END
+#
+################################
